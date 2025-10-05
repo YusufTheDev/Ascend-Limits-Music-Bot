@@ -22,6 +22,9 @@ async def on_ready():
         print(f"Synced {len(synced)} slash commands.")
     except Exception as e:
         print(f"Error syncing commands: {e}")
+    await bot.change_presence(
+        activity=discord.Activity(type=discord.ActivityType.listening, name="your queue 🎵")
+    )
 
 
 # Modern async setup

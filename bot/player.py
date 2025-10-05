@@ -8,7 +8,6 @@ from spotipy.oauth2 import SpotifyClientCredentials
 SPOTIPY_CLIENT_ID = os.getenv("SPOTIPY_CLIENT_ID")
 SPOTIPY_CLIENT_SECRET = os.getenv("SPOTIPY_CLIENT_SECRET")
 
-# Keep ffmpeg simple; filters are added later
 FFMPEG_BASE_BEFORE = '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -nostdin'
 FFMPEG_BASE_OPTIONS = '-vn'
 
@@ -31,17 +30,11 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.data = data
         self.title = data.get('title')
         self.url = data.get('url')
+        self.thumbnail = data.get('thumbnail')  # added for embed
 
     @classmethod
     async def from_url(cls, url, *, loop=None, filters=None, start_time=None):
-        """
-        Streams the URL (download=False) and returns a YTDLSource wrapping
-        an FFmpegPCMAudio built from the direct URL. This avoids local downloads
-        and makes ffmpeg handle the stream directly.
-        """
         loop = loop or asyncio.get_event_loop()
-
-        # Use download=False to get a direct stream URL from yt-dlp
         try:
             data = await loop.run_in_executor(None, lambda: cls.ytdl.extract_info(url, download=False))
         except Exception as e:
@@ -53,19 +46,15 @@ class YTDLSource(discord.PCMVolumeTransformer):
         if 'entries' in data:
             data = data['entries'][0]
 
-        # data should contain a 'url' field we can pass to ffmpeg
         stream_url = data.get('url')
         if not stream_url:
             raise RuntimeError("No playable URL found in yt-dlp data.")
 
-        # build ffmpeg options; append -af when filters are present
         before = FFMPEG_BASE_BEFORE
         options = FFMPEG_BASE_OPTIONS
         if start_time:
             before = f"{before} -ss {start_time}"
         if filters:
-            # careful with quoting — pass the whole -af as part of options
-            # e.g. -af "asetrate=...,aresample=...,atempo=..."
             options = f'{options} -af "{filters}"'
 
         ffmpeg_kwargs = {
@@ -81,19 +70,19 @@ class GuildMusic:
     def __init__(self, bot, guild):
         self.bot = bot
         self.guild = guild
-        self.queue = []               # list of (query, filters) where query can be url or search
-        self.history = []             # optional: record of played songs (not used heavily here)
-        self.current = None           # (query, filters)
+        self.queue = []
+        self.history = []
+        self.current = None
         self.loop_song = False
         self.loop_queue = False
         self.autoplay = False
-        self.global_filter = None     # If set, applied to songs that don't have their own filter
-        self.force_filter = None      # Temporary flag: next play should replay current with this filter
+        self.global_filter = None
+        self.force_filter = None
         self.replaying = False
-        self.manual_skip = False  # NEW: prevent after_play double triggers
+        self.manual_skip = False
+        self._empty_sent = False
 
     async def add_song(self, query, *, filters=None):
-        # resolve spotify track -> text search if necessary
         if "spotify.com" in query:
             try:
                 if "track" in query:
@@ -115,7 +104,6 @@ class GuildMusic:
                             if not track:
                                 continue
                             try:
-                                # validate track has artists and name
                                 if not track.get('artists') or not track.get('name'):
                                     continue
                                 track_query = f"{track['artists'][0]['name']} {track['name']}"
@@ -132,19 +120,12 @@ class GuildMusic:
                 print(f"Spotify error: {e}")
                 return
 
-        # fallback: just add as a normal query if it's not empty
         if query:
             self.queue.append((query, filters))
 
-    async def play_next(self, text_channel=None, interaction: discord.Interaction = None, force_filters=None):
-        """
-        Play the next song in queue.
-        text_channel: normal discord.TextChannel
-        interaction: slash command interaction, used to send followups safely
-        """
+    async def play_next(self, text_channel=None, interaction=None, force_filters=None):
         filters = None
 
-        # Determine song to play
         if force_filters and self.current:
             query, _ = self.current
             filters = force_filters
@@ -162,10 +143,12 @@ class GuildMusic:
                     query, filters = self.current
                 else:
                     self.current = None
-                    if interaction:
-                        await interaction.followup.send("Queue is empty.")
-                    elif text_channel:
-                        await text_channel.send("Queue is empty.")
+                    if not self._empty_sent:
+                        self._empty_sent = True
+                        if interaction:
+                            await interaction.followup.send("Queue is empty.")
+                        elif text_channel:
+                            await text_channel.send("Queue is empty.")
                     return
             else:
                 query, filters = self.queue.pop(0)
@@ -173,10 +156,8 @@ class GuildMusic:
                     self.queue.append(self.current)
                 self.current = (query, filters)
 
-        # Active filter: per-song > global
         active_filter = filters if filters is not None else self.global_filter
 
-        # Build audio player
         try:
             player = await YTDLSource.from_url(query, loop=self.bot.loop, filters=active_filter)
         except Exception as e:
@@ -199,15 +180,12 @@ class GuildMusic:
         def after_play(error):
             if error:
                 print(f"[after_play error] {error}")
-            # Only auto-play next if not manually skipping/replaying
             if not self.replaying and not self.manual_skip:
                 asyncio.run_coroutine_threadsafe(
                     self.play_next(text_channel=text_channel, interaction=interaction),
                     self.bot.loop
                 )
 
-
-        # Stop current playback if any
         if vc.is_playing():
             vc.stop()
             await asyncio.sleep(0.2)
@@ -215,22 +193,22 @@ class GuildMusic:
         self.replaying = False
         vc.play(player, after=after_play)
 
-        # Send "Now playing" message safely
-        # Send "Now playing" message safely
-        msg = f"🎶 Now playing: **{getattr(player, 'title', 'Unknown')}**\nFilter: `{active_filter or 'None'}`"
+        # Now Playing Embed
+        embed = discord.Embed(
+            title="🎶 Now Playing",
+            description=f"**{player.title}**",
+            color=discord.Color.blurple()
+        )
+        embed.add_field(name="Filter", value=active_filter or "None", inline=True)
+        if getattr(player, "thumbnail", None):
+            embed.set_thumbnail(url=player.thumbnail)
         if text_channel:
-            await text_channel.send(msg)
-        # remove any interaction.followup.send usage here
-
+            await text_channel.send(embed=embed)
 
     async def stop(self, interaction=None):
         vc = self.guild.voice_client
-        if vc:
-            if vc.is_playing():
-                vc.stop()
-            # FFmpeg might still hang; disconnecting will clean it up in most cases
-
-        # Clear everything
+        if vc and vc.is_playing():
+            vc.stop()
         self.queue.clear()
         self.current = None
         self.loop_song = False
@@ -238,5 +216,4 @@ class GuildMusic:
         self.global_filter = None
         self.force_filter = None
         self.replaying = False
-        self._empty_sent = False  # reset empty queue flag
-
+        self._empty_sent = False
