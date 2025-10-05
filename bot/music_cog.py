@@ -1,9 +1,11 @@
 import discord
 import asyncio
-from discord.ext import commands, tasks
+from discord.ext import commands
+from discord import app_commands
 from bot.player import GuildMusic
 
 MAX_QUEUE_PAGE = 10  # number of songs per embed page
+MAX_COMMANDS_PAGE = 10  # number of commands per page
 
 
 class MusicCog(commands.Cog):
@@ -31,7 +33,9 @@ class MusicCog(commands.Cog):
             )
             return False
 
-    @discord.app_commands.command(name="play", description="Play a song")
+    # ---------------- Original Commands ----------------
+
+    @app_commands.command(name="play", description="Play a song")
     async def play_slash(self, interaction: discord.Interaction, query: str):
         music = self.get_music(interaction.guild)
 
@@ -47,7 +51,7 @@ class MusicCog(commands.Cog):
         if vc is None or not vc.is_playing():
             asyncio.create_task(music.play_next(text_channel=interaction.channel))
 
-    @discord.app_commands.command(name="skip", description="Skip the current song")
+    @app_commands.command(name="skip", description="Skip the current song")
     async def skip_slash(self, interaction: discord.Interaction):
         vc = interaction.guild.voice_client
         if vc and vc.is_playing():
@@ -56,7 +60,7 @@ class MusicCog(commands.Cog):
         else:
             await interaction.response.send_message("Nothing is playing.", ephemeral=True)
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="skipto", description="Skip to a specific index in the queue"
     )
     async def skipto_slash(self, interaction: discord.Interaction, index: int):
@@ -99,7 +103,7 @@ class MusicCog(commands.Cog):
 
         await interaction.followup.send(f"⏭️ Skipped to song {index} in the queue.")
 
-    @discord.app_commands.command(name="queue", description="Show the song queue")
+    @app_commands.command(name="queue", description="Show the song queue")
     async def queue_slash(self, interaction: discord.Interaction):
         music = self.get_music(interaction.guild)
 
@@ -126,17 +130,37 @@ class MusicCog(commands.Cog):
             )
             pages.append(embed)
 
-        # Paginate if multiple pages
-        for page in pages:
-            await interaction.followup.send(embed=page)
+        # Send first page with buttons if multiple pages
+        if len(pages) == 1:
+            await interaction.followup.send(embed=pages[0])
+            return
 
-    @discord.app_commands.command(name="clearqueue", description="Clear the song queue")
+        current_page = 0
+
+        class QueueView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=120)
+                self.page = 0
+
+            @discord.ui.button(label="Previous", style=discord.ButtonStyle.primary)
+            async def prev(self, interaction_button, button):
+                self.page = max(0, self.page - 1)
+                await interaction_button.response.edit_message(embed=pages[self.page])
+
+            @discord.ui.button(label="Next", style=discord.ButtonStyle.primary)
+            async def next(self, interaction_button, button):
+                self.page = min(len(pages) - 1, self.page + 1)
+                await interaction_button.response.edit_message(embed=pages[self.page])
+
+        await interaction.followup.send(embed=pages[0], view=QueueView())
+
+    @app_commands.command(name="clearqueue", description="Clear the song queue")
     async def clearqueue_slash(self, interaction: discord.Interaction):
         music = self.get_music(interaction.guild)
         music.queue.clear()
         await interaction.response.send_message("🗑️ Queue cleared.")
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="stop", description="Stop and disconnect the bot"
     )
     async def stop_slash(self, interaction: discord.Interaction):
@@ -152,7 +176,7 @@ class MusicCog(commands.Cog):
             "⏹️ Stopped, cleared the queue, and disconnected."
         )
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="nowplaying", description="Show the currently playing song"
     )
     async def nowplaying_slash(self, interaction: discord.Interaction):
@@ -172,7 +196,7 @@ class MusicCog(commands.Cog):
 
         await interaction.response.send_message("Nothing is playing.")
 
-    @discord.app_commands.command(name="shuffle", description="Shuffle the queue")
+    @app_commands.command(name="shuffle", description="Shuffle the queue")
     async def shuffle_slash(self, interaction: discord.Interaction):
         import random
 
@@ -180,7 +204,7 @@ class MusicCog(commands.Cog):
         random.shuffle(music.queue)
         await interaction.response.send_message("🔀 Queue shuffled.")
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="loop_song", description="Toggle looping the current song"
     )
     async def loop_song_slash(self, interaction: discord.Interaction):
@@ -192,7 +216,7 @@ class MusicCog(commands.Cog):
             f"Loop song is now {'on' if music.loop_song else 'off'}."
         )
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="loop_queue", description="Toggle looping the queue"
     )
     async def loop_queue_slash(self, interaction: discord.Interaction):
@@ -204,11 +228,11 @@ class MusicCog(commands.Cog):
             f"Loop queue is now {'on' if music.loop_queue else 'off'}."
         )
 
-    @discord.app_commands.command(
+    @app_commands.command(
         name="filter",
         description="Apply a filter to the current song (or all songs if global)",
     )
-    @discord.app_commands.choices(
+    @app_commands.choices(
         filter_name=[
             discord.app_commands.Choice(name="Nightcore", value="nightcore"),
             discord.app_commands.Choice(name="Daycore", value="daycore"),
@@ -244,3 +268,80 @@ class MusicCog(commands.Cog):
             await asyncio.sleep(0.2)
             await music.play_next(text_channel=interaction.channel)
             music.replaying = False
+
+    # ---------------- New Commands ----------------
+
+    @app_commands.command(
+        name="pause",
+        description="Pause or resume the currently playing song"
+    )
+    async def pause_slash(self, interaction: discord.Interaction):
+        vc = interaction.guild.voice_client
+        if not vc:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+            return
+        if vc.is_paused():
+            vc.resume()
+            await interaction.response.send_message("▶️ Resumed the song.")
+        elif vc.is_playing():
+            vc.pause()
+            await interaction.response.send_message("⏸️ Paused the song.")
+        else:
+            await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+
+
+    @app_commands.command(
+        name="commands",
+        description="Show all available music commands"
+    )
+    async def commands_slash(self, interaction: discord.Interaction):
+        all_commands = [
+            ("play", "Play a song"),
+            ("skip", "Skip the current song"),
+            ("skipto", "Skip to a specific index in the queue"),
+            ("queue", "Show the song queue"),
+            ("clearqueue", "Clear the song queue"),
+            ("stop", "Stop and disconnect the bot"),
+            ("nowplaying", "Show the currently playing song"),
+            ("shuffle", "Shuffle the queue"),
+            ("loop_song", "Toggle looping the current song"),
+            ("loop_queue", "Toggle looping the queue"),
+            ("filter", "Apply a filter to the current song"),
+            ("pause", "Pause or resume the currently playing song"),
+        ]
+
+        # Build pages
+        pages = []
+        for i in range(0, len(all_commands), MAX_COMMANDS_PAGE):
+            chunk = all_commands[i : i + MAX_COMMANDS_PAGE]
+            description = ""
+            for name, desc in chunk:
+                description += f"**/{name}** — {desc}\n"
+            embed = discord.Embed(
+                title=f"Commands (page {i//MAX_COMMANDS_PAGE+1})",
+                description=description,
+                color=discord.Color.blue()
+            )
+            pages.append(embed)
+
+        # Send first page with buttons if multiple pages
+        if len(pages) == 1:
+            await interaction.response.send_message(embed=pages[0])
+            return
+
+        class CommandsView(discord.ui.View):
+            def __init__(self):
+                super().__init__(timeout=120)
+                self.page = 0
+
+            @discord.ui.button(label="Previous", style=discord.ButtonStyle.primary)
+            async def prev(self, interaction_button, button):
+                self.page = max(0, self.page - 1)
+                await interaction_button.response.edit_message(embed=pages[self.page])
+
+            @discord.ui.button(label="Next", style=discord.ButtonStyle.primary)
+            async def next(self, interaction_button, button):
+                self.page = min(len(pages) - 1, self.page + 1)
+                await interaction_button.response.edit_message(embed=pages[self.page])
+
+        await interaction.response.send_message(embed=pages[0], view=CommandsView())

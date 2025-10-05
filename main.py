@@ -27,7 +27,6 @@ async def on_ready():
     )
 
 
-# Modern async setup
 @bot.event
 async def setup_hook():
     await bot.add_cog(MusicCog(bot))
