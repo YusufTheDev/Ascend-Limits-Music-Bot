@@ -30,28 +30,20 @@ class MusicCog(commands.Cog):
     async def play_slash(self, interaction: discord.Interaction, query: str):
         music = self.get_music(interaction.guild)
 
-        # Join VC
-        if interaction.user.voice and interaction.user.voice.channel:
-            channel = interaction.user.voice.channel
-            if interaction.guild.voice_client:
-                await interaction.guild.voice_client.move_to(channel)
-            else:
-                await channel.connect()
-        else:
-            await interaction.response.send_message("You must be in a voice channel.", ephemeral=True)
-            return
+        # Join VC first
+        if not await self.join_vc(interaction):
+            return  # join_vc already responds if failed
 
-        # Add song
-        await music.add_song(query)
+        # Respond immediately to slash command to avoid timeout
+        await interaction.response.send_message(f"✅ Queuing: {query}")
 
-        # Respond immediately to interaction
-        await interaction.response.send_message(f"✅ Added to queue: {query}")
+        # Queue songs (Spotify playlist or single track) asynchronously
+        asyncio.create_task(music.add_song(query))
 
-        # Play next if not already playing
+        # Play next if not already playing (use text_channel, NOT the interaction)
         vc = interaction.guild.voice_client
         if vc is None or not vc.is_playing():
-            await music.play_next(text_channel=interaction.channel)
-
+            asyncio.create_task(music.play_next(text_channel=interaction.channel))
 
     @discord.app_commands.command(name="skip", description="Skip the current song")
     async def skip_slash(self, interaction: discord.Interaction):
@@ -61,6 +53,44 @@ class MusicCog(commands.Cog):
             await interaction.response.send_message("Skipped current song.")
         else:
             await interaction.response.send_message("Nothing is playing.", ephemeral=True)
+    
+    @discord.app_commands.command(name="skipto", description="Skip to a specific index in the queue")
+    async def skipto_slash(self, interaction: discord.Interaction, index: int):
+        music = self.get_music(interaction.guild)
+        vc = interaction.guild.voice_client
+
+        # Defer the interaction to give more time
+        await interaction.response.defer(thinking=True)
+
+        if not music.queue and not music.current:
+            await interaction.followup.send("Nothing is in the queue.", ephemeral=True)
+            return
+
+        if music.loop_song:
+            if vc and vc.is_playing():
+                vc.stop()
+            await interaction.followup.send("Looping current song; skipto ignored.")
+            return
+
+        if index < 1 or index > len(music.queue):
+            await interaction.followup.send(f"Invalid index. Queue has {len(music.queue)} song(s).", ephemeral=True)
+            return
+
+        target_pos = index - 1
+        skipped_songs = music.queue[:target_pos]
+        music.queue = music.queue[target_pos:]
+
+        if music.loop_queue:
+            music.queue += skipped_songs
+
+        music.manual_skip = True
+        if vc and vc.is_playing():
+            vc.stop()
+        
+        await music.play_next(text_channel=interaction.channel)
+        music.manual_skip = False
+
+        await interaction.followup.send(f"Skipped to song {index} in the queue.")
 
     @discord.app_commands.command(name="queue", description="Show the song queue")
     async def queue_slash(self, interaction: discord.Interaction):
@@ -78,22 +108,24 @@ class MusicCog(commands.Cog):
             else:
                 lines.append(f"{i+1}. **{title}**")
 
-        # Split lines into messages <= 2000 chars
+        # Split into chunks ≤ 2000 chars including the "**Queue:**\n" prefix
         chunks = []
-        current_chunk = ""
+        current_chunk = "**Queue:**\n"
         for line in lines:
+            # If adding this line exceeds 2000 chars, start a new chunk
             if len(current_chunk) + len(line) + 1 > 2000:
                 chunks.append(current_chunk)
-                current_chunk = ""
-            current_chunk += line + "\n"
+                current_chunk = "**Queue:**\n" + line + "\n"
+            else:
+                current_chunk += line + "\n"
         if current_chunk:
             chunks.append(current_chunk)
 
-        # Send first chunk as main response
-        await interaction.response.send_message(f"**Queue:**\n{chunks[0]}")
+        # Defer to prevent interaction timeout
+        await interaction.response.defer(thinking=True)
 
-        # Send the rest as follow-ups
-        for chunk in chunks[1:]:
+        # Send each chunk as followup
+        for chunk in chunks:
             await interaction.followup.send(chunk)
 
     @discord.app_commands.command(name="clearqueue", description="Clear the song queue")

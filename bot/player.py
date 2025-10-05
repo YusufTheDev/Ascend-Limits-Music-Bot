@@ -90,7 +90,7 @@ class GuildMusic:
         self.global_filter = None     # If set, applied to songs that don't have their own filter
         self.force_filter = None      # Temporary flag: next play should replay current with this filter
         self.replaying = False
-
+        self.manual_skip = False  # NEW: prevent after_play double triggers
 
     async def add_song(self, query, *, filters=None):
         # resolve spotify track -> text search if necessary
@@ -98,7 +98,11 @@ class GuildMusic:
             try:
                 if "track" in query:
                     track = sp.track(query)
-                    query = f"{track['artists'][0]['name']} {track['name']}"
+                    if track and track.get('artists') and track.get('name'):
+                        query = f"{track['artists'][0]['name']} {track['name']}"
+                    else:
+                        print("Skipped invalid Spotify track")
+                        return
                 elif "playlist" in query:
                     offset = 0
                     count = 0
@@ -111,6 +115,9 @@ class GuildMusic:
                             if not track:
                                 continue
                             try:
+                                # validate track has artists and name
+                                if not track.get('artists') or not track.get('name'):
+                                    continue
                                 track_query = f"{track['artists'][0]['name']} {track['name']}"
                                 self.queue.append((track_query, filters))
                                 count += 1
@@ -124,16 +131,17 @@ class GuildMusic:
             except Exception as e:
                 print(f"Spotify error: {e}")
                 return
-        # fallback: just add as a normal query
-        self.queue.append((query, filters))
 
+        # fallback: just add as a normal query if it's not empty
+        if query:
+            self.queue.append((query, filters))
 
-    async def play_next(self, text_channel=None, force_filters=None):
+    async def play_next(self, text_channel=None, interaction: discord.Interaction = None, force_filters=None):
         """
-        Play the next song in queue. Sends messages via text_channel instead of interaction
-        to avoid Unknown interaction (404).
+        Play the next song in queue.
+        text_channel: normal discord.TextChannel
+        interaction: slash command interaction, used to send followups safely
         """
-
         filters = None
 
         # Determine song to play
@@ -154,7 +162,9 @@ class GuildMusic:
                     query, filters = self.current
                 else:
                     self.current = None
-                    if text_channel:
+                    if interaction:
+                        await interaction.followup.send("Queue is empty.")
+                    elif text_channel:
                         await text_channel.send("Queue is empty.")
                     return
             else:
@@ -170,23 +180,32 @@ class GuildMusic:
         try:
             player = await YTDLSource.from_url(query, loop=self.bot.loop, filters=active_filter)
         except Exception as e:
-            if text_channel:
-                await text_channel.send(f"❌ Error playing `{query}`: {e}")
+            msg = f"❌ Error playing `{query}`: {e}"
+            if interaction:
+                await interaction.followup.send(msg)
+            elif text_channel:
+                await text_channel.send(msg)
             return
 
         vc = self.guild.voice_client
         if not vc:
-            if text_channel:
-                await text_channel.send("Bot is not connected to a voice channel.")
+            msg = "Bot is not connected to a voice channel."
+            if interaction:
+                await interaction.followup.send(msg)
+            elif text_channel:
+                await text_channel.send(msg)
             return
 
         def after_play(error):
             if error:
                 print(f"[after_play error] {error}")
-            if not self.replaying:
+            # Only auto-play next if not manually skipping/replaying
+            if not self.replaying and not self.manual_skip:
                 asyncio.run_coroutine_threadsafe(
-                    self.play_next(text_channel=text_channel), self.bot.loop
+                    self.play_next(text_channel=text_channel, interaction=interaction),
+                    self.bot.loop
                 )
+
 
         # Stop current playback if any
         if vc.is_playing():
@@ -196,11 +215,12 @@ class GuildMusic:
         self.replaying = False
         vc.play(player, after=after_play)
 
-        # Send "Now playing" via channel
+        # Send "Now playing" message safely
+        # Send "Now playing" message safely
+        msg = f"🎶 Now playing: **{getattr(player, 'title', 'Unknown')}**\nFilter: `{active_filter or 'None'}`"
         if text_channel:
-            title = getattr(player, "title", "Unknown")
-            filter_display = active_filter if active_filter else "None"
-            await text_channel.send(f"🎶 Now playing: **{title}**\nFilter: `{filter_display}`")
+            await text_channel.send(msg)
+        # remove any interaction.followup.send usage here
 
 
     async def stop(self, interaction=None):
