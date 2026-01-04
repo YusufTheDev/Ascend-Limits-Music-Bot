@@ -315,7 +315,7 @@ class MusicCog(commands.Cog):
         name="filter",
         description="Apply a filter to the current song (or all songs if global)",
     )
-    @app_commands.choices(
+    @app_commands.choices(filter_name=[
             discord.app_commands.Choice(name="Nightcore", value="nightcore"),
             discord.app_commands.Choice(name="Daycore", value="daycore"),
             discord.app_commands.Choice(name="Vaporwave", value="vaporwave"),
