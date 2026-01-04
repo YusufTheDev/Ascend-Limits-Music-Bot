@@ -18,17 +18,30 @@ sp = spotipy.Spotify(auth_manager=SpotifyClientCredentials(
 
 
 class YTDLSource(discord.PCMVolumeTransformer):
-    ytdl = yt_dlp.YoutubeDL({
+    ytdl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
         'default_search': 'ytsearch',
         'noplaylist': True,
+        'cookiefile': 'cookies.txt',  # Enable cookies
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'opus',
             'preferredquality': '192',
         }],
-    })
+    }
+
+    cookie_path = 'cookies.txt'
+    if not os.path.exists(cookie_path):
+        # Check Render's default secret path
+        if os.path.exists('/etc/secrets/cookies.txt'):
+             cookie_path = '/etc/secrets/cookies.txt'
+             ytdl_opts['cookiefile'] = cookie_path
+        else:
+             if 'cookiefile' in ytdl_opts:
+                del ytdl_opts['cookiefile']
+
+    ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 
     def __init__(self, source, *, data, volume=0.5):
         super().__init__(source, volume)
