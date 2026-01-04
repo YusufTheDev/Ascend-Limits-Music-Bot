@@ -103,9 +103,11 @@ class MusicCog(commands.Cog):
                 await channel.connect()
             return True
         else:
-            await interaction.response.send_message(
-                "You must be in a voice channel.", ephemeral=True
-            )
+            msg = "You must be in a voice channel."
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
             return False
 
     # ---------------- Original Commands ----------------

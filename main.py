@@ -9,6 +9,10 @@ load_dotenv()
 from keep_alive import keep_alive
 keep_alive()
 
+import os
+# Add local bin folder (where we downloaded ffmpeg) to PATH
+os.environ["PATH"] += os.pathsep + os.path.join(os.getcwd(), "bin")
+
 import discord
 from discord.ext import commands
 
