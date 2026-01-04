@@ -22,7 +22,12 @@ class YTDLSource(discord.PCMVolumeTransformer):
         'format': 'bestaudio/best',
         'quiet': True,
         'default_search': 'ytsearch',
-        'noplaylist': True
+        'noplaylist': True,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'opus',
+            'preferredquality': '192',
+        }],
     })
 
     def __init__(self, source, *, data, volume=0.5):
@@ -33,7 +38,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.thumbnail = data.get('thumbnail')  # added for embed
 
     @classmethod
-    async def from_url(cls, url, *, loop=None, filters=None, start_time=None):
+    async def from_url(cls, url, *, loop=None, filters=None, start_time=None, volume=0.5):
         loop = loop or asyncio.get_event_loop()
         try:
             data = await loop.run_in_executor(None, lambda: cls.ytdl.extract_info(url, download=False))
@@ -63,7 +68,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         }
 
         source = discord.FFmpegPCMAudio(stream_url, **ffmpeg_kwargs)
-        return cls(source, data=data)
+        return cls(source, data=data, volume=volume)
 
 
 class GuildMusic:
@@ -81,6 +86,28 @@ class GuildMusic:
         self.replaying = False
         self.manual_skip = False
         self._empty_sent = False
+        self.volume = 0.5
+        self.controller_message = None  # To store the persistent controller message
+
+    def set_volume(self, volume):
+        self.volume = volume
+        if self.guild.voice_client and self.guild.voice_client.source:
+             self.guild.voice_client.source.volume = volume
+
+    async def seek(self, seconds, text_channel=None, interaction=None):
+        if not self.current:
+            return
+        
+        self.replaying = True
+        vc = self.guild.voice_client
+        if vc and vc.is_playing():
+            vc.stop()
+        
+        # small delay to ensure stop processes
+        await asyncio.sleep(0.1)
+        await self.play_next(text_channel=text_channel, interaction=interaction, start_time=seconds)
+        self.replaying = False
+
 
     async def add_song(self, query, *, filters=None):
         if "spotify.com" in query:
@@ -123,10 +150,12 @@ class GuildMusic:
         if query:
             self.queue.append((query, filters))
 
-    async def play_next(self, text_channel=None, interaction=None, force_filters=None):
+    async def play_next(self, text_channel=None, interaction=None, force_filters=None, start_time=None):
         filters = None
 
-        if force_filters and self.current:
+        if start_time is not None and self.current:
+             query, filters = self.current
+        elif force_filters and self.current:
             query, _ = self.current
             filters = force_filters
             self.current = (query, filters)
@@ -159,7 +188,7 @@ class GuildMusic:
         active_filter = filters if filters is not None else self.global_filter
 
         try:
-            player = await YTDLSource.from_url(query, loop=self.bot.loop, filters=active_filter)
+            player = await YTDLSource.from_url(query, loop=self.bot.loop, filters=active_filter, start_time=start_time, volume=self.volume)
         except Exception as e:
             msg = f"❌ Error playing `{query}`: {e}"
             if interaction:
