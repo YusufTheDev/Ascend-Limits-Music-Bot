@@ -23,12 +23,11 @@ class YTDLSource(discord.PCMVolumeTransformer):
         'quiet': True,
         'default_search': 'ytsearch',
         'noplaylist': True,
-        'cookiefile': 'cookies.txt',  # Enable cookies
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'opus',
-            'preferredquality': '192',
-        }],
+        'nocheckcertificate': True,
+        'ignoreerrors': False,
+        'logtostderr': False,
+        'no_warnings': True,
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     }
 
     cookie_path = 'cookies.txt'
@@ -36,10 +35,12 @@ class YTDLSource(discord.PCMVolumeTransformer):
         # Check Render's default secret path
         if os.path.exists('/etc/secrets/cookies.txt'):
              cookie_path = '/etc/secrets/cookies.txt'
-             ytdl_opts['cookiefile'] = cookie_path
-        else:
-             if 'cookiefile' in ytdl_opts:
-                del ytdl_opts['cookiefile']
+    
+    if os.path.exists(cookie_path):
+        ytdl_opts['cookiefile'] = cookie_path
+        print(f"Loading cookies from {cookie_path}")
+    else:
+        print("No cookies.txt found.")
 
     ytdl = yt_dlp.YoutubeDL(ytdl_opts)
 
@@ -48,7 +49,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         self.data = data
         self.title = data.get('title')
         self.url = data.get('url')
-        self.thumbnail = data.get('thumbnail')  # added for embed
+        self.thumbnail = data.get('thumbnail')
 
     @classmethod
     async def from_url(cls, url, *, loop=None, filters=None, start_time=None, volume=0.5):
@@ -68,8 +69,10 @@ class YTDLSource(discord.PCMVolumeTransformer):
         if not stream_url:
             raise RuntimeError("No playable URL found in yt-dlp data.")
 
-        before = FFMPEG_BASE_BEFORE
-        options = FFMPEG_BASE_OPTIONS
+        # Reconnect options to prevent 403/skipping
+        before = "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+        options = "-vn" 
+        
         if start_time:
             before = f"{before} -ss {start_time}"
         if filters:
